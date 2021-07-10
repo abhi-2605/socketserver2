@@ -9,7 +9,8 @@ const io = require("socket.io")(process.env.PORT || 3333, {
 });
 var app = new express()
 const messages = require('./revmsg');
-const revmsg = require("./revmsg");
+const blockusers = require('./blockeuser')
+const { ConnectionStates } = require("mongoose");
 let users = [];
 let noactiverusers = []; //offline but msg store aakan with details
 const prvmsgs = []; // online allatha usersnu vendi
@@ -72,10 +73,14 @@ const getUser = (to, msg, from) => {
     }
 
 };
+const blockusersocket = (userId) => {
+    return users.find((user) => user.userId == userId)
+
+}
 
 
-
-
+var temp
+var blockcheck
 io.on("connection", (socket) => {
     //when ceonnect
     console.log("a user connected.");
@@ -83,8 +88,10 @@ io.on("connection", (socket) => {
     var id
         //take userId and socketId from user 
     socket.on("addUser", (userId) => {
-
+        blockcheck = userId
         addUser(userId, socket.id);
+
+
         const prevmsg = pendingmsg(userId)
         if (prevmsg == "user not active") {
             var txt = "still not active"
@@ -116,7 +123,7 @@ io.on("connection", (socket) => {
     });
 
 
-
+    var temp
 
     //send and get message 
     socket.on("sendMessage", (data) => {
@@ -132,14 +139,29 @@ io.on("connection", (socket) => {
         } else {
 
             var socketid = users.find(user => user.userId === data.to).socketId; // to get live user s socket id
+
             console.log(socketid)
             var from = data.from
             var msg = data.msg
             var to = data.to
+            socket.on("checkblock", async(data) => {
+                try {
+                    let doc = await blockusers.findOne({ blockeduser: from, blockedby: to });
+                    if (doc) {
+                        temp = "blockeuser"
+                        console.log(temp)
+                    } else {
+                        io.to(socketid).emit("getMessage", ({ from, msg, to }));
+                    }
 
+                } catch (e) {
+                    console.error(e);
+                }
+            });
 
-            io.to(socketid).emit("getMessage", ({ from, msg, to }));
+            // io.to(socketid).emit("getMessage", ({ from, msg, to }));
         }
+
 
     });
 
@@ -175,8 +197,46 @@ io.on("connection", (socket) => {
 
     });
 
+    socket.on('blockuser', async(data) => {
+        const userblocked = new blockusers({
+            blockeduser: data.blockeduser,
+            blockedby: data.blockedby
+        })
+
+        try {
+            const save = await userblocked.save()
+            console.log(save)
+
+        } catch {
+            console.log(err)
+        }
+    })
+
+
+    socket.on("blocklive", async(data) => {
+        try {
+            let doc = await blockusers.findOne({ blockeduser: data.block, blockedby: data.by });
+            if (doc) {
+                var senderid = users.find(user => user.userId === data.by).socketId
+
+                io.to(senderid).emit("block", ("blocked"))
+            }
+
+        } catch (e) {
+            console.error(e);
+        }
+    });
+    socket.on('unblock', async(data) => {
+        try {
+            await blockusers.deleteOne({ blockeduser: data.blockeduser, blockedby: data.by })
+        } catch (e) {
+            console.log(e)
+        }
+    })
 });
 
 
+// var senderid = users.find(user => user.userId === data.blockedby).socketId
+// io.to(senderid).emit("block", ("blockeduser"))
 
 // this.websocketservice.emit("message",this.sendmessage)
