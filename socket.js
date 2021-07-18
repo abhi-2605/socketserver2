@@ -2,6 +2,7 @@ const e = require("cors");
 const express = require('express');
 const bodyParser = require('body-parser');
 const http = require('http')
+const fs = require('fs');
 const io = require("socket.io")(process.env.PORT || 3333, {
     cors: {
         origin: "*",
@@ -10,11 +11,15 @@ const io = require("socket.io")(process.env.PORT || 3333, {
 var app = new express()
 const messages = require('./revmsg');
 const blockusers = require('./blockeuser')
+const muteduser = require('./muteusers')
+const register = require('./register')
 const { ConnectionStates } = require("mongoose");
+// const muteusers = require("./muteusers");
 let users = [];
 let noactiverusers = []; //offline but msg store aakan with details
 const prvmsgs = []; // online allatha usersnu vendi
-const msgarray = []
+let blockedarray = []
+let mutearray = []
 const addUser = (userId, socketId) => {
     !users.some((user) => user.userId === userId) &&
         users.push({ userId, socketId });
@@ -40,6 +45,21 @@ var removeByAttr = function(arr, attr, value) {
     return arr;
 }
 
+var removeblockuser = function(arr, value1, value2) {
+
+    const doc = blockedarray.filter((user) => user.blockedby == value1)
+    console.log(doc + "reavhed here?")
+    if (doc != "") {
+        var blockeduser = doc.find((x) => x.blockeduser == value1).blockeduser
+
+        var blockedby = doc.find((x) => x.blockeduser == value1).blockedby
+    }
+    const id = blockedarray.indexOf({ "blockeduser": blockeduser, "blockedby": blockedby });
+    const ary = blockedarray.splice(id, 1);
+
+    return ary
+}
+
 const pendingmsg = (recid) => { // for cheking pending msgs
     const revid = noactiverusers.find((noactiverusers) => noactiverusers.to == recid)
     console.log(revid)
@@ -59,24 +79,45 @@ const getUser = (to, msg, from) => {
 
     const found = users.find((user) => user.userId == to);
     console.log(found)
+
+    const doc = blockedarray.filter((user) => user.blockedby == to)
+    console.log(doc)
+    if (doc != "") {
+        var blockeduser = doc.find((x) => x.blockeduser == from).blockeduser
+
+        var blockedby = doc.find((x) => x.blockeduser == from).blockedby
+    }
     if (found == undefined) {
         // !noactiverusers.some((noactiverusers) => noactiverusers.msg === msg) &&
-        noactiverusers.push({ to, msg, from })
-        console.log(noactiverusers)
-        txt = "not active"
+        if (blockeduser == from && blockedby == to) {
+            console.log("you are blocked")
+            txt = "not active"
 
-        return txt
+            return txt
+        } else {
+            noactiverusers.push({ to, msg, from })
+            console.log(noactiverusers)
+            txt = "not active"
+
+
+            return txt
+        }
     } else {
 
-        return found
+        if (blockeduser == from && blockedby == to) {
+            console.log("you are blocked")
+            txt = "blockeduser"
+
+            return txt
+        } else {
+            return found
+        }
+
 
     }
 
 };
-const blockusersocket = (userId) => {
-    return users.find((user) => user.userId == userId)
 
-}
 
 
 var temp
@@ -109,12 +150,28 @@ io.on("connection", (socket) => {
                 prvmsgs.push({ from, msg, to })
 
                 // var MSG = search(to, noactiverusers);
-                var MSG = noactiverusers.filter(noactiverusers => noactiverusers.to === to)
+                // var MSG = noactiverusers.filter(noactiverusers => noactiverusers.to === to)
                 console.log(MSG)
 
                 console.log(from)
-                io.to(recsockwetid.socketId).emit("prvmsgs", MSG); // sending prv msgs when user was not online
-                id = recid.to
+
+                const doc = blockedarray.filter((user) => user.blockedby == to)
+                console.log(doc)
+                if (doc != "") {
+                    var blockeduser = doc.find((x) => x.blockeduser == from).blockeduser
+
+                    var blockedby = doc.find((x) => x.blockeduser == from).blockedby
+                }
+                if (blockeduser == from && blockedby == to) {
+                    console.log("you are blocked")
+                    txt = "blockeduser"
+
+                    return txt
+                } else {
+                    var MSG = noactiverusers.filter(noactiverusers => noactiverusers.to === to)
+                    io.to(recsockwetid.socketId).emit("prvmsgs", MSG); // sending prv msgs when user was not online
+                    id = recid.to
+                }
             }
 
         }
@@ -125,7 +182,32 @@ io.on("connection", (socket) => {
 
     var temp
 
-    //send and get message 
+
+
+    socket.on('muteusercheck', async(data) => {
+
+            console.log(data)
+            try {
+
+
+
+
+
+                const save = await muteduser.find({ mutedby: data });
+                var senderid = users.find(user => user.userId == data).socketId
+                if (save != "") {
+                    io.to(senderid).emit('mutecheck', save)
+                    console.log(save)
+                }
+
+
+
+
+            } catch {
+                console.log(err)
+            }
+        })
+        //send and get message 
     socket.on("sendMessage", (data) => {
         const rec = getUser(data.to, data.msg, data.from); // to recieve user id of the reciver  
 
@@ -135,7 +217,8 @@ io.on("connection", (socket) => {
             io.to(found.socketId).emit("getMessage", (rec));
             console.log(rec)
 
-
+        } else if (rec == "blockeduser") {
+            console.log("suc blocked")
         } else {
 
             var socketid = users.find(user => user.userId === data.to).socketId; // to get live user s socket id
@@ -144,22 +227,9 @@ io.on("connection", (socket) => {
             var from = data.from
             var msg = data.msg
             var to = data.to
-            socket.on("checkblock", async(data) => {
-                try {
-                    let doc = await blockusers.findOne({ blockeduser: from, blockedby: to });
-                    if (doc) {
-                        temp = "blockeuser"
-                        console.log(temp)
-                    } else {
-                        io.to(socketid).emit("getMessage", ({ from, msg, to }));
-                    }
 
-                } catch (e) {
-                    console.error(e);
-                }
-            });
 
-            // io.to(socketid).emit("getMessage", ({ from, msg, to }));
+            io.to(socketid).emit("getMessage", ({ from, msg, to }));
         }
 
 
@@ -204,8 +274,11 @@ io.on("connection", (socket) => {
         })
 
         try {
-            const save = await userblocked.save()
-            console.log(save)
+            await userblocked.save()
+            const save = await blockusers.findOne({ blockeduser: data.blockeduser, blockedby: data.blockedby });
+            blockedarray.push(save)
+            console.log(blockedarray)
+
 
         } catch {
             console.log(err)
@@ -216,6 +289,7 @@ io.on("connection", (socket) => {
     socket.on("blocklive", async(data) => {
         try {
             let doc = await blockusers.findOne({ blockeduser: data.block, blockedby: data.by });
+
             if (doc) {
                 var senderid = users.find(user => user.userId === data.by).socketId
 
@@ -227,13 +301,79 @@ io.on("connection", (socket) => {
         }
     });
     socket.on('unblock', async(data) => {
+            try {
+                await blockusers.deleteOne({ blockeduser: data.blockeduser, blockedby: data.by })
+                var abc = removeblockuser(blockedarray, 'blockeduser', data.blockeduser, 'blockedby', data.blockedby)
+                console.log(abc + "removed ?")
+            } catch (e) {
+                console.log(e)
+            }
+        })
+        // socket.on("checkblock", async(data) => {
+        //     try {
+        //         let doc = await blockusers.findOne({ blockeduser: data.blockeduser, blockedby: data.blockedby });
+        //         if (doc) {
+        //             console.log("blocked")
+        //         } else {
+        //             return found
+        //         }
+
+    //     } catch (e) {
+    //         console.error(e);
+    //     }
+    // });
+    socket.on('muteuser', async(data) => {
+        const muteuser = new muteduser({
+            muteduser: data.muteduser,
+            mutedby: data.mutedby
+        })
+
         try {
-            await blockusers.deleteOne({ blockeduser: data.blockeduser, blockedby: data.by })
+            await muteuser.save()
+
+
+            console.log(mutearray)
+
+
+        } catch {
+            console.log(err)
+        }
+    })
+
+    socket.on('getallfrnds', async(data) => {
+        var senderid = users.find(user => user.userId == data).socketId
+        try {
+            register.find({ _id: { $nin: data } }).select('_id') // selects all the id which is not equal to the given id
+                .then(function(data) {
+
+                    if (data) {
+                        console.log(data)
+
+                        io.to(senderid).emit('allfrnds', data)
+                    } else {
+                        res.json({ id: "null", name: "NO SUCH USER REGISTERED" })
+                    }
+
+                });
         } catch (e) {
             console.log(e)
         }
     })
+
+    socket.on("muteuserdel", async(data) => {
+        console.log(data)
+        try {
+            await muteduser.deleteOne({ muteduser: data.muteduser, mutedby: data.mutedby })
+        } catch (e) {
+            console.log(e)
+
+        }
+    })
+
 });
+
+
+
 
 
 // var senderid = users.find(user => user.userId === data.blockedby).socketId
